@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Display Layar Utama - Live Score Penalti (Sistem Putaran & Status)</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .font-score { font-family: 'Orbitron', sans-serif; }
+        
+        @keyframes bounce-scale {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+        .animate-bounce-scale { animation: bounce-scale 0.5s ease-in-out; }
+        
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-dark-950 text-slate-100 min-h-screen overflow-x-hidden">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- AUDIO ENGINE ---
+        const playSound = (type) => {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                if (type === 'goal') {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+                    osc.frequency.exponentialRampToValueAtTime(1046.50, ctx.currentTime + 0.35);
+                    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                    osc.connect(gain); gain.connect(ctx.destination);
+                    osc.start(); osc.stop(ctx.currentTime + 0.5);
+                } else if (type === 'miss') {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(160, ctx.currentTime);
+                    osc.frequency.linearRampToValueAtTime(70, ctx.currentTime + 0.45);
+                    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.6);
+                    osc.connect(gain); gain.connect(ctx.destination);
+                    osc.start(); osc.stop(ctx.currentTime + 0.6);
+                } else if (type === 'call') {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                    osc.frequency.setValueAtTime(880.00, ctx.currentTime + 0.15);
+                    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                    osc.connect(gain); gain.connect(ctx.destination);
+                    osc.start(); osc.stop(ctx.currentTime + 0.5);
+                }
+            } catch (e) {
+                console.log("Audio contexts pending first gesture interaction.");
+            }
+        };
+
+        function App() {
+            const [viewMode, setViewMode] = useState('tv'); // 'tv', 'projector', 'rules'
+            const [participants, setParticipants] = useState([]);
+            const [groups, setGroups] = useState([]);
+            const [selectedGroupDisplay, setSelectedGroupDisplay] = useState('Semua');
+            const [settings, setSettings] = useState({
+                tournamentName: "Live Tournament",
+                currentParticipantId: "",
+                currentRound: 1,
+                matchStatus: "live" // "belum_mulai", "live", "istirahat", "selesai"
+            });
+
+            const [activeGoalOverlay, setActiveGoalOverlay] = useState(false);
+            const [activeMissOverlay, setActiveMissOverlay] = useState(false);
+            const [activeCallOverlay, setActiveCallOverlay] = useState(null);
+
+            const broadcastChannel = useMemo(() => new BroadcastChannel('penalty_live_score'), []);
+
+            useEffect(() => {
+                const savedParticipants = localStorage.getItem('penalty_participants');
+                const savedSettings = localStorage.getItem('penalty_settings');
+                const savedGroups = localStorage.getItem('penalty_groups');
+                
+                if (savedParticipants) setParticipants(JSON.parse(savedParticipants));
+                if (savedSettings) setSettings(JSON.parse(savedSettings));
+                if (savedGroups) setGroups(JSON.parse(savedGroups));
+            }, []);
+
+            useEffect(() => {
+                broadcastChannel.onmessage = (event) => {
+                    if (event.data.type === 'UPDATE') {
+                        const { participants: incomingParticipants, settings: incomingSettings, groups: incomingGroups } = event.data.payload;
+                        setParticipants(incomingParticipants);
+                        setSettings(incomingSettings);
+                        if (incomingGroups) setGroups(incomingGroups);
+                    } else if (event.data.type === 'GOAL_ALERT') {
+                        playSound('goal');
+                        setActiveGoalOverlay(true);
+                        setTimeout(() => setActiveGoalOverlay(false), 2000);
+                    } else if (event.data.type === 'MISS_ALERT') {
+                        playSound('miss');
+                        setActiveMissOverlay(true);
+                        setTimeout(() => setActiveMissOverlay(false), 2000);
+                    } else if (event.data.type === 'CALL_ALERT') {
+                        playSound('call');
+                        setActiveCallOverlay(event.data.payload);
+                        setTimeout(() => setActiveCallOverlay(null), 4000);
+                    }
+                };
+                return () => broadcastChannel.close;
+            }, [broadcastChannel]);
+
+            const currentShooter = participants.find(p => p.id === settings.currentParticipantId) || participants[0];
+
+            // Filtered Leaderboard
+            const filteredLeaderboard = useMemo(() => {
+                return [...participants]
+                    .filter(p => selectedGroupDisplay === 'Semua' || p.group === selectedGroupDisplay)
+                    .sort((a, b) => b.totalScore - a.totalScore || a.order - b.order)
+                    .slice(0, 10);
+            }, [participants, selectedGroupDisplay]);
+
+            // Top 3 Podium Juara (Untuk Status Selesai)
+            const podiumWinners = useMemo(() => {
+                return [...participants]
+                    .sort((a, b) => b.totalScore - a.totalScore || a.order - b.order)
+                    .slice(0, 3);
+            }, [participants]);
+
+            return (
+                <div class="min-h-screen flex flex-col bg-black text-white selection:bg-emerald-500 selection:text-black">
+                    
+                    {/* View Switcher */}
+                    <div class="absolute top-2 right-2 z-50 opacity-15 hover:opacity-100 transition-opacity bg-dark-900 border border-slate-800 rounded-lg p-1 flex gap-1 text-xs">
+                        <button onClick={() => setViewMode('tv')} class={`px-2.5 py-1 rounded ${viewMode === 'tv' ? 'bg-emerald-500 text-black font-bold' : ''}`}>TV View</button>
+                        <button onClick={() => setViewMode('projector')} class={`px-2.5 py-1 rounded ${viewMode === 'projector' ? 'bg-emerald-500 text-black font-bold' : ''}`}>Proyektor</button>
+                        <button onClick={() => setViewMode('rules')} class={`px-2.5 py-1 rounded ${viewMode === 'rules' ? 'bg-emerald-500 text-black font-bold' : ''}`}>Layar Aturan</button>
+                    </div>
+
+                    {/* OVERLAYS */}
+                    {activeGoalOverlay && (
+                        <div class="fixed inset-0 z-50 bg-emerald-600 flex flex-col items-center justify-center animate-bounce-scale">
+                            <h1 class="text-[14vw] font-black text-white font-score tracking-widest drop-shadow-2xl">⚽ GOL!!!</h1>
+                            <p class="text-2xl md:text-4xl font-extrabold uppercase text-white/90">TENDANGAN SEMPURNA</p>
+                        </div>
+                    )}
+
+                    {activeMissOverlay && (
+                        <div class="fixed inset-0 z-50 bg-rose-600 flex flex-col items-center justify-center animate-bounce-scale">
+                            <h1 class="text-[14vw] font-black text-white font-score tracking-widest drop-shadow-2xl">❌ GAGAL</h1>
+                            <p class="text-2xl md:text-4xl font-extrabold uppercase text-white/90">TENDANGAN GAGAL/TERSEAL</p>
+                        </div>
+                    )}
+
+                    {/* OVERLAY PANGGILAN TOLERANSI */}
+                    {activeCallOverlay && (
+                        <div class="fixed inset-0 z-50 bg-amber-600 flex flex-col items-center justify-center animate-bounce-scale p-6">
+                            <div class="text-center space-y-6">
+                                <div class="w-24 h-24 bg-white text-amber-600 rounded-full flex items-center justify-center mx-auto text-5xl shadow-2xl animate-pulse">
+                                    <i class="lucide-volume-2"></i>
+                                </div>
+                                <h1 class="text-5xl md:text-7xl font-black text-white tracking-tight leading-none uppercase">PANGGILAN KE-{activeCallOverlay.call}</h1>
+                                <p class="text-3xl md:text-5xl font-extrabold text-black uppercase font-score">{activeCallOverlay.name}</p>
+                                <div class="bg-black/30 text-white/90 px-4 py-2.5 rounded-xl border border-white/20 max-w-xl text-center mx-auto text-xs font-semibold">
+                                    "Peserta diberikan toleransi maksimal 1 menit dengan 3 kali panggilan. Apabila tidak hadir, peserta dinyatakan GUGUR." (Aturan No. 3)
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* SCREEN: BELUM MULAI (PRE-MATCH) */}
+                    {settings.matchStatus === 'belum_mulai' && (
+                        <div class="flex-1 flex flex-col p-6 md:p-12 justify-between max-w-5xl mx-auto w-full text-center">
+                            <div class="space-y-4 my-auto">
+                                <div class="w-20 h-20 bg-amber-500/10 border border-amber-500/30 rounded-full flex items-center justify-center mx-auto animate-pulse">
+                                    <i class="lucide-clock text-amber-500 text-4xl"></i>
+                                </div>
+                                <span class="bg-amber-500 text-black font-black text-xs px-3 py-1 rounded-full uppercase tracking-widest">PERSAPAN PERTANDINGAN</span>
+                                <h1 class="text-5xl md:text-6xl font-black tracking-tight text-white uppercase">{settings.tournamentName}</h1>
+                                <p class="text-xl text-slate-400 max-w-2xl mx-auto leading-relaxed">
+                                    Pertandingan akan segera dimulai tepat pada pukul <span class="text-amber-400 font-extrabold">14.00 WIB</span>. Harap seluruh peserta mempersiapkan diri dan hadir 15 menit sebelum acara dimulai.
+                                </p>
+                                <div class="bg-dark-900 border border-slate-800 p-5 rounded-2xl max-w-xl mx-auto flex items-center justify-between text-left gap-4">
+                                    <div>
+                                        <h3 class="text-sm font-bold text-white flex items-center gap-1.5"><i class="lucide-shield-alert text-amber-500 text-sm"></i> Aturan Penting No. 3</h3>
+                                        <p class="text-xs text-slate-400 mt-1">Peserta diberikan toleransi maksimal 1 menit dengan 3 kali panggilan sebelum dinyatakan gugur.</p>
+                                    </div>
+                                    <span class="bg-rose-500/10 text-rose-400 px-3 py-1.5 rounded-lg border border-rose-500/20 text-xs font-black shrink-0">Batas: 60 Detik</span>
+                                </div>
+                            </div>
+                            <footer class="text-slate-500 text-xs font-medium uppercase tracking-wider">
+                                Menunggu wasit meniup peluit tanda mulai pertandingan
+                            </footer>
+                        </div>
+                    )}
+
+                    {/* SCREEN: ISTIRAHAT (BREAK) */}
+                    {settings.matchStatus === 'istirahat' && (
+                        <div class="flex-1 flex flex-col p-6 md:p-12 justify-between max-w-6xl mx-auto w-full gap-8">
+                            <div class="text-center space-y-2">
+                                <div class="inline-flex items-center gap-2 bg-blue-500/10 text-blue-400 px-4 py-1 rounded-full border border-blue-500/20 text-xs font-bold uppercase tracking-widest animate-pulse">
+                                    <i class="lucide-coffee text-xs"></i> SEDANG JEDA ISTIRAHAT
+                                </div>
+                                <h1 class="text-4xl md:text-5xl font-black tracking-tight text-white uppercase">{settings.tournamentName}</h1>
+                                <p class="text-sm text-slate-400">Pertandingan dijeda sementara. Seluruh peserta dapat beristirahat.</p>
+                            </div>
+
+                            <div class="bg-dark-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4 max-w-3xl mx-auto w-full">
+                                <h3 class="font-extrabold text-white text-lg flex items-center gap-2 border-b border-slate-800 pb-3">
+                                    📊 KLASEMEN SEMENTARA (BREAK SCORES)
+                                </h3>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {[...participants]
+                                        .sort((a, b) => b.totalScore - a.totalScore || a.order - b.order)
+                                        .slice(0, 8)
+                                        .map((p, idx) => (
+                                            <div key={p.id} class="flex items-center justify-between p-3 bg-dark-950 border border-slate-850 rounded-2xl">
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-xs font-bold text-slate-500">#{idx + 1}</span>
+                                                    <img src={p.photo} alt={p.name} class="w-8 h-8 rounded-full object-cover shrink-0" />
+                                                    <div>
+                                                        <h4 class="text-xs font-bold text-white truncate max-w-[120px]">{p.name}</h4>
+                                                        <p class="text-[9px] text-slate-500">{p.team}</p>
+                                                    </div>
+                                                </div>
+                                                <span class="bg-blue-500/10 text-blue-400 text-xs font-bold px-2.5 py-1 rounded border border-blue-500/20 font-score">{p.totalScore} GOL</span>
+                                            </div>
+                                        ))}
+                                </div>
+                            </div>
+
+                            <footer class="text-center text-slate-500 text-xs">
+                                Wasit akan melanjutkan pertandingan setelah waktu istirahat berakhir
+                            </footer>
+                        </div>
+                    )}
+
+                    {/* SCREEN: SELESAI (PODIUM PODIUM) */}
+                    {settings.matchStatus === 'selesai' && (
+                        <div class="flex-1 flex flex-col p-6 md:p-12 justify-between max-w-5xl mx-auto w-full gap-8">
+                            <div class="text-center space-y-2">
+                                <div class="inline-flex items-center gap-2 bg-emerald-500/10 text-emerald-400 px-4 py-1.5 rounded-full border border-emerald-500/20 text-xs font-black uppercase tracking-widest animate-bounce">
+                                    🏆 TURNAMEN SELESAI
+                                </div>
+                                <h1 class="text-4xl md:text-5xl font-black tracking-tight text-white uppercase">{settings.tournamentName}</h1>
+                                <p class="text-sm text-slate-400">Selamat kepada para pemenang penendang terbaik!</p>
+                            </div>
+
+                            {/* PODIUM JUARA (Podium style layout) */}
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-end justify-center max-w-4xl mx-auto w-full pt-10">
+                                
+                                {/* JUARA 2 (Silver) */}
+                                {podiumWinners[1] && (
+                                    <div class="bg-dark-900 border border-slate-800 rounded-3xl p-6 text-center shadow-xl space-y-4 relative md:order-1 order-2 transform md:scale-95">
+                                        <div class="absolute -top-6 left-1/2 -translate-x-1/2 w-12 h-12 bg-slate-300 text-dark-950 font-black rounded-full flex items-center justify-center text-2xl shadow-xl">🥈</div>
+                                        <div class="w-24 h-24 rounded-full overflow-hidden mx-auto border-4 border-slate-400 shadow-xl">
+                                            <img src={podiumWinners[1].photo} alt={podiumWinners[1].name} class="w-full h-full object-cover" />
+                                        </div>
+                                        <div>
+                                            <h3 class="font-extrabold text-white text-base leading-tight truncate">{podiumWinners[1].name}</h3>
+                                            <p class="text-slate-400 text-xs">{podiumWinners[1].team}</p>
+                                        </div>
+                                        <div class="bg-slate-300/10 text-slate-300 border border-slate-300/20 py-2 rounded-xl text-xs font-bold uppercase font-score">
+                                            JUARA II • {podiumWinners[1].totalScore} GOL
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* JUARA 1 (Gold) */}
+                                {podiumWinners[0] && (
+                                    <div class="bg-dark-900 border-2 border-amber-500 rounded-3xl p-8 text-center shadow-2xl space-y-4 relative md:order-2 order-1 transform md:-translate-y-4 scale-105 z-10">
+                                        <div class="absolute -top-8 left-1/2 -translate-x-1/2 w-16 h-16 bg-amber-500 text-dark-950 font-black rounded-full flex items-center justify-center text-3xl shadow-2xl animate-bounce">🏆</div>
+                                        <div class="w-32 h-32 rounded-full overflow-hidden mx-auto border-4 border-amber-500 shadow-xl">
+                                            <img src={podiumWinners[0].photo} alt={podiumWinners[0].name} class="w-full h-full object-cover" />
+                                        </div>
+                                        <div>
+                                            <h3 class="font-black text-white text-xl leading-tight truncate uppercase tracking-tight">{podiumWinners[0].name}</h3>
+                                            <p class="text-amber-400 text-sm font-bold">{podiumWinners[0].team}</p>
+                                        </div>
+                                        <div class="bg-amber-500 text-dark-950 py-2.5 rounded-xl text-sm font-black uppercase tracking-wider font-score">
+                                            JUARA UTAMA • {podiumWinners[0].totalScore} GOL
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* JUARA 3 (Bronze) */}
+                                {podiumWinners[2] && (
+                                    <div class="bg-dark-900 border border-slate-800 rounded-3xl p-6 text-center shadow-xl space-y-4 relative md:order-3 order-3 transform md:scale-90">
+                                        <div class="absolute -top-6 left-1/2 -translate-x-1/2 w-12 h-12 bg-amber-800 text-white font-black rounded-full flex items-center justify-center text-2xl shadow-xl">🥉</div>
+                                        <div class="w-24 h-24 rounded-full overflow-hidden mx-auto border-4 border-amber-800 shadow-xl">
+                                            <img src={podiumWinners[2].photo} alt={podiumWinners[2].name} class="w-full h-full object-cover" />
+                                        </div>
+                                        <div>
+                                            <h3 class="font-extrabold text-white text-base leading-tight truncate">{podiumWinners[2].name}</h3>
+                                            <p class="text-slate-400 text-xs">{podiumWinners[2].team}</p>
+                                        </div>
+                                        <div class="bg-amber-800/10 text-amber-600 border border-amber-800/20 py-2 rounded-xl text-xs font-bold uppercase font-score">
+                                            JUARA III • {podiumWinners[2].totalScore} GOL
+                                        </div>
+                                    </div>
+                                )}
+
+                            </div>
+
+                            <footer class="text-slate-500 text-center text-xs font-semibold uppercase tracking-wider">
+                                Keputusan juri dan panitia pelaksana bersifat mutlak dan final
+                            </footer>
+                        </div>
+                    )}
+
+                    {/* LIVE VIEW / NORMAL SCOREBOARD */}
+                    {settings.matchStatus === 'live' && (
+                        <div class="flex-1 flex flex-col p-6 md:p-8 justify-between max-w-7xl mx-auto w-full gap-6">
+                            
+                            <div class="text-center space-y-1">
+                                <span class="bg-emerald-500 text-black font-black text-xs px-3 py-1 rounded-full uppercase tracking-widest">SISTEM MONITOR KLASEMEN PUTARAN</span>
+                                <h1 class="text-3xl md:text-4xl font-black tracking-tight text-white">{settings.tournamentName}</h1>
+                            </div>
+
+                            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+                                
+                                {/* Active Shooter */}
+                                <div class="lg:col-span-7 bg-dark-900 border-2 border-slate-800 rounded-3xl p-6 flex flex-col justify-between shadow-2xl relative overflow-hidden min-h-[420px]">
+                                    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-3 h-3 bg-emerald-500 rounded-full animate-ping"></div>
+                                            <span class="text-xs font-black tracking-widest text-slate-300 uppercase">PENENDANG AKTIF</span>
+                                        </div>
+                                        {currentShooter && (
+                                            <div class="bg-emerald-500 text-dark-950 font-black px-3 py-1 rounded text-xs font-score">
+                                                PUTARAN R{settings.currentRound} / {currentShooter.scores.length}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {currentShooter ? (
+                                        <div class="space-y-6 flex-1 flex flex-col justify-center">
+                                            <div class="flex flex-col md:flex-row items-center gap-6">
+                                                <div class="relative w-36 h-36 rounded-full overflow-hidden border-4 border-slate-800 shrink-0">
+                                                    <img src={currentShooter.photo} alt={currentShooter.name} class="w-full h-full object-cover" />
+                                                </div>
+
+                                                <div class="text-center md:text-left space-y-3">
+                                                    <div class="space-y-1">
+                                                        <span class="bg-slate-850 border border-slate-700 text-emerald-400 font-extrabold text-[10px] tracking-widest px-2.5 py-1 rounded-full uppercase">
+                                                            {currentShooter.group}
+                                                        </span>
+                                                        <h2 class="text-3xl md:text-4xl font-black text-white leading-tight uppercase mt-2">{currentShooter.name}</h2>
+                                                        <p class="text-sm text-slate-400 font-bold uppercase tracking-widest">{currentShooter.team}</p>
+                                                    </div>
+
+                                                    <div class="flex items-center justify-center md:justify-start gap-3">
+                                                        <div class="bg-dark-950 border border-slate-800 rounded-xl px-4 py-2 text-center min-w-[100px]">
+                                                            <div class="text-[9px] text-slate-400 uppercase font-bold">TOTAL GOL</div>
+                                                            <div class="text-3xl font-black text-white font-score mt-0.5">{currentShooter.totalScore}</div>
+                                                        </div>
+                                                        <div class="bg-dark-950 border border-slate-800 rounded-xl px-4 py-2 text-center min-w-[100px]">
+                                                            <div class="text-[9px] text-slate-400 uppercase font-bold">STATUS</div>
+                                                            <div class={`text-sm font-black font-score mt-2 px-2 py-0.5 rounded uppercase ${currentShooter.status === 'lolos' ? 'bg-emerald-500 text-dark-950' : currentShooter.status === 'gugur' ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                                                                {currentShooter.status === 'aktif' ? 'Aktif' : currentShooter.status}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Indicators */}
+                                            <div class="bg-dark-950/80 rounded-2xl p-4 border border-slate-800 space-y-2">
+                                                <p class="text-center text-[10px] font-bold text-slate-400 tracking-wider uppercase">HISTORI TENDANGAN ({currentShooter.scores.length} TENDANGAN KUOTA)</p>
+                                                <div class="flex flex-wrap items-center justify-center gap-2 max-h-24 overflow-y-auto no-scrollbar">
+                                                    {currentShooter.scores.map((status, idx) => (
+                                                        <div key={idx} class={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${status === 'scored' ? 'bg-emerald-500 text-dark-950 shadow' : status === 'missed' ? 'bg-rose-500 text-white shadow' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
+                                                            {status === 'scored' ? '✓' : status === 'missed' ? '✗' : idx + 1}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div class="text-slate-400 text-center py-12">Menunggu penendang terpilih...</div>
+                                    )}
+                                </div>
+
+                                {/* Leaderboard */}
+                                <div class="lg:col-span-5 bg-dark-900 border-2 border-slate-800 rounded-3xl p-5 shadow-2xl flex flex-col justify-between">
+                                    <div class="space-y-3">
+                                        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+                                            <h3 class="font-bold text-white flex items-center gap-2">🏆 KLASEMEN BABAK</h3>
+                                            <span class="text-[10px] text-emerald-400 uppercase font-black animate-pulse">Live</span>
+                                        </div>
+
+                                        {/* Filter Selektor */}
+                                        <div class="flex flex-wrap gap-1 bg-dark-950 p-1 rounded-lg border border-slate-850">
+                                            <button 
+                                                onClick={() => setSelectedGroupDisplay('Semua')}
+                                                class={`text-[9px] px-2 py-0.5 rounded ${selectedGroupDisplay === 'Semua' ? 'bg-emerald-500 text-black font-extrabold' : 'text-slate-400'}`}
+                                            >
+                                                Semua
+                                            </button>
+                                            {groups.map(g => (
+                                                <button 
+                                                    key={g}
+                                                    onClick={() => setSelectedGroupDisplay(g)}
+                                                    class={`text-[9px] px-2 py-0.5 rounded ${selectedGroupDisplay === g ? 'bg-emerald-500 text-black font-extrabold' : 'text-slate-400'}`}
+                                                >
+                                                    {g}
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        <div class="space-y-2 max-h-[300px] overflow-y-auto no-scrollbar pr-1">
+                                            {filteredLeaderboard.map((p, idx) => {
+                                                const isCurrent = p.id === settings.currentParticipantId;
+                                                return (
+                                                    <div 
+                                                        key={p.id} 
+                                                        class={`flex items-center justify-between p-2 rounded-xl border transition-all ${isCurrent ? 'bg-emerald-500 text-dark-950 border-emerald-400' : 'bg-dark-950 border-slate-800'}`}
+                                                    >
+                                                        <div class="flex items-center gap-2">
+                                                            <div class={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black ${idx === 0 ? 'bg-amber-500 text-white' : idx === 1 ? 'bg-slate-300 text-dark-950' : idx === 2 ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                                                                {idx + 1}
+                                                            </div>
+                                                            <img src={p.photo} alt={p.name} class="w-7 h-7 rounded-full object-cover shrink-0" />
+                                                            <div>
+                                                                <h4 class={`text-xs font-black truncate max-w-[110px] ${isCurrent ? 'text-dark-950' : 'text-white'}`}>{p.name}</h4>
+                                                                <p class={`text-[9px] ${isCurrent ? 'text-dark-900/80 font-bold' : 'text-slate-400'}`}>
+                                                                    {p.team} <span class="opacity-80">({p.group})</span>
+                                                                </p>
+                                                            </div>
+                                                        </div>
+
+                                                        <div class="flex items-center gap-2">
+                                                            <span class={`text-[8px] font-black px-1.5 py-0.5 rounded ${p.status === 'lolos' ? 'bg-emerald-500/20 text-emerald-400' : p.status === 'gugur' ? 'bg-rose-500/20 text-rose-400' : 'hidden'}`}>
+                                                                {p.status.toUpperCase()}
+                                                            </span>
+                                                            <div class={`text-xs font-score px-2 py-0.5 rounded ${isCurrent ? 'bg-dark-950 text-emerald-400' : 'bg-slate-800 text-white'}`}>
+                                                                {p.totalScore} G
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="text-[10px] text-slate-500 text-center pt-2 italic border-t border-slate-850">
+                                        Menampilkan Top 10 dari klasemen {selectedGroupDisplay}
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            <footer class="text-center text-[10px] text-slate-500 mt-auto">
+                                © 2026 Live Score Penalti Realtime - Sinkronisasi Tanpa Delay
+                            </footer>
+                        </div>
+                    )}
+
+                    {/* PROJECTOR VIEW */}
+                    {viewMode === 'projector' && (
+                        <div class="flex-1 flex flex-col p-8 md:p-16 justify-between max-w-7xl mx-auto w-full">
+                            
+                            <div class="flex items-center justify-between border-b-4 border-white/20 pb-4">
+                                <span class="font-extrabold text-xl text-emerald-400 tracking-wider">⚽ LIVE PENALTY KICK</span>
+                                <h1 class="font-black text-2xl md:text-3xl font-score text-right">{settings.tournamentName}</h1>
+                            </div>
+
+                            {currentShooter ? (
+                                <div class="grid grid-cols-1 md:grid-cols-12 gap-8 items-center justify-center my-auto">
+                                    <div class="md:col-span-4 flex justify-center">
+                                        <div class="relative w-56 h-56 md:w-72 md:h-72 rounded-full overflow-hidden border-8 border-white/20 shadow-2xl">
+                                            <img src={currentShooter.photo} alt={currentShooter.name} class="w-full h-full object-cover" />
+                                        </div>
+                                    </div>
+
+                                    <div class="md:col-span-8 text-center md:text-left space-y-6">
+                                        <div>
+                                            <div class="flex items-center justify-center md:justify-start gap-2">
+                                                <span class="bg-emerald-500 text-black font-black text-xs px-3 py-1 rounded">PENENDANG AKTIF</span>
+                                                <span class="bg-white/10 text-white font-extrabold text-xs px-3 py-1 rounded border border-white/10 uppercase tracking-widest">{currentShooter.group}</span>
+                                                {currentShooter.status !== 'aktif' && (
+                                                    <span class={`font-black text-xs px-3 py-1 rounded uppercase ${currentShooter.status === 'lolos' ? 'bg-emerald-500 text-black animate-pulse' : 'bg-rose-500 text-white'}`}>
+                                                        {currentShooter.status}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <h2 class="text-5xl md:text-6xl font-black text-white tracking-tight mt-3">{currentShooter.name}</h2>
+                                            <p class="text-xl text-emerald-400 font-extrabold tracking-widest uppercase mt-2">{currentShooter.team}</p>
+                                        </div>
+
+                                        {/* Score bar */}
+                                        <div class="flex flex-col sm:flex-row items-center gap-4 bg-white/5 p-4 rounded-3xl border border-white/10 max-w-xl">
+                                            <div class="text-center px-4">
+                                                <div class="text-[10px] text-slate-400 uppercase font-bold font-score">Ronde {settings.currentRound}</div>
+                                                <div class="text-4xl font-black text-emerald-400 font-score">{currentShooter.totalScore} GOL</div>
+                                            </div>
+                                            <div class="h-px w-full sm:h-12 sm:w-px bg-white/20"></div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                {currentShooter.scores.map((status, idx) => (
+                                                    <div key={idx} class={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg ${status === 'scored' ? 'bg-emerald-500 text-black' : status === 'missed' ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
+                                                        {status === 'scored' ? '✓' : status === 'missed' ? '✗' : idx + 1}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div class="text-center text-3xl font-bold py-24">Menunggu penendang aktif...</div>
+                            )}
+
+                            <div class="border-t-4 border-white/20 pt-4 flex items-center justify-between text-[11px] font-bold text-slate-500">
+                                {currentShooter && (
+                                    <span>PESERTA: {currentShooter.name.toUpperCase()} (BABAK: {currentShooter.group})</span>
+                                )}
+                                <span class="text-emerald-400 animate-pulse">● LIVE BROADCAST SINKRONISASI</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* SCREEN ATURAN MAIN */}
+                    {viewMode === 'rules' && (
+                        <div class="flex-1 flex flex-col p-6 md:p-12 justify-between max-w-6xl mx-auto w-full">
+                            <div class="text-center border-b-4 border-emerald-500 pb-4">
+                                <h1 class="text-4xl md:text-5xl font-black text-white tracking-tight leading-none uppercase">📜 ATURAN & REGULASI PERTANDINGAN</h1>
+                                <p class="text-sm text-emerald-400 font-bold uppercase tracking-widest mt-2">{settings.tournamentName}</p>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 my-auto text-sm leading-relaxed text-slate-200">
+                                <div class="bg-dark-900 border border-slate-800 p-5 rounded-2xl space-y-3.5">
+                                    <div class="flex gap-2"><span class="font-black text-emerald-400">1.</span> <p>Peserta wajib hadir 15 menit sebelum pertandingan dimulai.</p></div>
+                                    <div class="flex gap-2"><span class="font-black text-emerald-400">2.</span> <p>Pertandingan dimulai pukul 14.00 WIB hingga selesai.</p></div>
+                                    <div class="flex gap-2"><span class="font-black text-emerald-400">3.</span> <p>Peserta diberikan toleransi maksimal 1 menit dengan 3 kali panggilan. Apabila tidak hadir setelah toleransi berakhir, peserta dinyatakan gugur.</p></div>
+                                    <div class="flex gap-2"><span class="font-black text-emerald-400">4.</span> <p>Setiap peserta mendapatkan kesempatan tendangan sesuai kuota babak aktif (Aturan merekomendasikan 3 kali). Jika seri, wasit melempar koin Rp 1.000.</p></div>
+                                </div>
+
+                                <div class="bg-dark-900 border border-slate-800 p-5 rounded-2xl space-y-3.5">
+                                    <div class="flex gap-2"><span class="font-black text-emerald-400">5.</span> <p>Peserta yang menang berhak melanjutkan ke babak/putaran berikutnya.</p></div>
+                                    <div class="flex gap-2">
+                                        <span class="font-black text-emerald-400">6.</span> 
+                                        <div>
+                                            <p class="font-semibold">Tendangan SAH apabila:</p>
+                                            <p class="text-slate-400 text-xs">a. Setelah peluit dibunyikan.</p>
+                                            <p class="text-slate-400 text-xs">b. Dilakukan langsung oleh peserta resmi.</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <span class="font-black text-emerald-400">7.</span> 
+                                        <div>
+                                            <p class="font-semibold">Gol SAH apabila:</p>
+                                            <p class="text-slate-400 text-xs">a. Bola masuk melewati garis gawang.</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex gap-2"><span class="font-black text-emerald-400">8.</span> <p>Peserta tidak boleh digantikan orang lain. Pelanggaran berbuah diskualifikasi.</p></div>
+                                </div>
+                            </div>
+
+                            <div class="bg-rose-950/20 text-rose-400 border border-rose-950 p-4 rounded-xl text-center text-xs font-bold uppercase italic font-score">
+                                "Keputusan panitia atau wasit bersifat final dan tidak dapat diganggu gugat."
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

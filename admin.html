@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Kontrol - Live Score Penalti (Sistem Putaran)</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            800: '#1e293b',
+                            900: '#0f172a',
+                            950: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .font-score { font-family: 'Orbitron', sans-serif; }
+    </style>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-dark-950 text-slate-100 min-h-screen">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const DEFAULT_GROUPS = ["Putaran 1 - Grup A", "Putaran 1 - Grup B", "Babak Semifinal", "Babak Final"];
+
+        const DEFAULT_PARTICIPANTS = [
+            { id: "1", name: "Bagus Kahfi", team: "Garuda FC", group: "Putaran 1 - Grup A", photo: "https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=400&fit=crop&q=80", order: 1, scores: ['scored', 'scored', 'missed'], totalScore: 2, status: 'aktif' },
+            { id: "2", name: "Pratama Arhan", team: "Merah Putih", group: "Putaran 1 - Grup A", photo: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&fit=crop&q=80", order: 2, scores: ['scored', 'scored', 'scored'], totalScore: 3, status: 'aktif' },
+            { id: "3", name: "Rizky Ridho", team: "Persija Utama", group: "Putaran 1 - Grup B", photo: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&fit=crop&q=80", order: 3, scores: ['scored', 'missed', 'scored'], totalScore: 2, status: 'aktif' },
+            { id: "4", name: "Witan Sulaeman", team: "Palisade Club", group: "Putaran 1 - Grup B", photo: "https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=400&fit=crop&q=80", order: 4, scores: ['scored', 'scored', 'scored'], totalScore: 3, status: 'aktif' }
+        ];
+
+        function App() {
+            const [participants, setParticipants] = useState(() => {
+                const saved = localStorage.getItem('penalty_participants');
+                return saved ? JSON.parse(saved) : DEFAULT_PARTICIPANTS;
+            });
+            const [groups, setGroups] = useState(() => {
+                const saved = localStorage.getItem('penalty_groups');
+                return saved ? JSON.parse(saved) : DEFAULT_GROUPS;
+            });
+            const [settings, setSettings] = useState(() => {
+                const saved = localStorage.getItem('penalty_settings');
+                return saved ? JSON.parse(saved) : {
+                    tournamentName: "Turnamen Penalti Cup 2026",
+                    currentParticipantId: "1",
+                    isLive: true,
+                    currentRound: 1,
+                    matchStatus: "live" // "belum_mulai", "live", "istirahat", "selesai"
+                };
+            });
+
+            // State Panggilan & Toleransi
+            const [timerSeconds, setTimerSeconds] = useState(60);
+            const [isTimerRunning, setIsTimerRunning] = useState(false);
+            const [callCount, setCallCount] = useState(0);
+            const [showRulesModal, setShowRulesModal] = useState(false);
+
+            // Filter & Penambahan Data
+            const [searchTerm, setSearchTerm] = useState('');
+            const [selectedGroupFilter, setSelectedGroupFilter] = useState('Semua');
+            const [newGroupName, setNewGroupName] = useState('');
+            const [newParticipant, setNewParticipant] = useState({ name: '', team: '', group: 'Putaran 1 - Grup A', photo: '', defaultQuota: '3' });
+            
+            const [isEditingSettings, setIsEditingSettings] = useState(false);
+            const [tempSettings, setTempSettings] = useState({ ...settings });
+            const [toast, setToast] = useState(null);
+
+            const timerRef = useRef(null);
+            const broadcastChannel = useMemo(() => new BroadcastChannel('penalty_live_score'), []);
+
+            useEffect(() => {
+                broadcastChannel.onmessage = (event) => {
+                    if (event.data.type === 'UPDATE') {
+                        const { participants: incomingParticipants, settings: incomingSettings, groups: incomingGroups } = event.data.payload;
+                        setParticipants(incomingParticipants);
+                        setSettings(incomingSettings);
+                        if (incomingGroups) setGroups(incomingGroups);
+                    }
+                };
+                return () => {
+                    broadcastChannel.close();
+                    if (timerRef.current) clearInterval(timerRef.current);
+                };
+            }, [broadcastChannel]);
+
+            // Timer Toleransi (Aturan No. 3)
+            useEffect(() => {
+                if (isTimerRunning && timerSeconds > 0) {
+                    timerRef.current = setInterval(() => {
+                        setTimerSeconds(prev => prev - 1);
+                    }, 1000);
+                } else if (timerSeconds === 0) {
+                    setIsTimerRunning(false);
+                    if (timerRef.current) clearInterval(timerRef.current);
+                    triggerToast("Waktu toleransi habis! Peserta dinyatakan GUGUR.", "error");
+                }
+                return () => {
+                    if (timerRef.current) clearInterval(timerRef.current);
+                };
+            }, [isTimerRunning, timerSeconds]);
+
+            const startToleransiTimer = () => {
+                setTimerSeconds(60);
+                setIsTimerRunning(true);
+                triggerToast("Timer toleransi 1 menit dimulai!", "info");
+            };
+
+            const stopToleransiTimer = () => {
+                setIsTimerRunning(false);
+                if (timerRef.current) clearInterval(timerRef.current);
+            };
+
+            const resetToleransiTimer = () => {
+                stopToleransiTimer();
+                setTimerSeconds(60);
+                setCallCount(0);
+            };
+
+            const incrementCallCount = () => {
+                if (callCount < 3) {
+                    const nextCall = callCount + 1;
+                    setCallCount(nextCall);
+                    broadcastChannel.postMessage({ type: 'CALL_ALERT', payload: { name: currentShooter?.name, call: nextCall } });
+                    triggerToast(`Panggilan ke-${nextCall} disiarkan ke TV!`);
+                }
+            };
+
+            const updateState = (newParticipants, newSettings, newGroups) => {
+                const resolvedParticipants = newParticipants || participants;
+                const resolvedSettings = newSettings || settings;
+                const resolvedGroups = newGroups || groups;
+
+                setParticipants(resolvedParticipants);
+                setSettings(resolvedSettings);
+                setGroups(resolvedGroups);
+
+                localStorage.setItem('penalty_participants', JSON.stringify(resolvedParticipants));
+                localStorage.setItem('penalty_settings', JSON.stringify(resolvedSettings));
+                localStorage.setItem('penalty_groups', JSON.stringify(resolvedGroups));
+                
+                broadcastChannel.postMessage({
+                    type: 'UPDATE',
+                    payload: {
+                        participants: resolvedParticipants,
+                        settings: resolvedSettings,
+                        groups: resolvedGroups
+                    }
+                });
+            };
+
+            const triggerToast = (msg, type = "success") => {
+                setToast({ message: msg, type });
+                setTimeout(() => setToast(null), 3000);
+            };
+
+            const handleStatusChange = (status) => {
+                const updatedSettings = { ...settings, matchStatus: status };
+                updateState(null, updatedSettings);
+                triggerToast(`Status pertandingan diubah ke: ${status.replace('_', ' ').toUpperCase()}`);
+            };
+
+            // Tambah Babak / Putaran Baru secara manual
+            const handleAddGroup = (e) => {
+                e.preventDefault();
+                const trimmed = newGroupName.trim();
+                if (!trimmed) return;
+                if (groups.includes(trimmed)) {
+                    triggerToast("Nama babak sudah terdaftar!", "error");
+                    return;
+                }
+                const updatedGroups = [...groups, trimmed];
+                updateState(null, null, updatedGroups);
+                setNewParticipant(prev => ({ ...prev, group: trimmed }));
+                setNewGroupName('');
+                triggerToast(`Babak "${trimmed}" berhasil dibuat!`);
+            };
+
+            const handleDeleteGroup = (groupName) => {
+                if (groups.length <= 1) {
+                    triggerToast("Minimal harus menyisakan 1 Babak!", "error");
+                    return;
+                }
+                const updatedGroups = groups.filter(g => g !== groupName);
+                const fallbackGroup = updatedGroups[0];
+                const updatedParticipants = participants.map(p => {
+                    if (p.group === groupName) {
+                        return { ...p, group: fallbackGroup };
+                    }
+                    return p;
+                });
+                updateState(updatedParticipants, null, updatedGroups);
+                triggerToast(`Babak "${groupName}" dihapus.`);
+            };
+
+            const handleUpdateStatus = (participantId, newStatus) => {
+                const updated = participants.map(p => {
+                    if (p.id === participantId) {
+                        return { ...p, status: newStatus };
+                    }
+                    return p;
+                });
+                updateState(updated, null);
+                
+                const shooter = participants.find(p => p.id === participantId);
+                if (newStatus === 'lolos') {
+                    triggerToast(`🎉 ${shooter.name} LOLOS ke babak berikutnya!`);
+                } else if (newStatus === 'gugur') {
+                    triggerToast(`❌ ${shooter.name} dinyatakan gugur/diskualifikasi.`, "error");
+                } else {
+                    triggerToast(`Status ${shooter.name} kembali diatur sebagai aktif.`);
+                }
+            };
+
+            const handlePromoteToNextRound = (targetGroup) => {
+                const survivors = participants.filter(p => p.status === 'lolos');
+                if (survivors.length === 0) {
+                    triggerToast("Tidak ada peserta berstatus 'Lolos' yang siap dipromosikan!", "error");
+                    return;
+                }
+
+                const updatedParticipants = participants.map(p => {
+                    if (p.status === 'lolos') {
+                        return { 
+                            ...p, 
+                            group: targetGroup, 
+                            status: 'aktif',
+                            scores: Array(p.scores.length).fill('waiting'),
+                            totalScore: 0
+                        };
+                    }
+                    return p;
+                });
+
+                updateState(updatedParticipants, null);
+                setSelectedGroupFilter(targetGroup);
+                triggerToast(`Sukses mempromosikan ${survivors.length} peserta ke "${targetGroup}"!`);
+            };
+
+            const adjustParticipantQuota = (participantId, increment) => {
+                const updated = participants.map(p => {
+                    if (p.id === participantId) {
+                        let newScores = [...p.scores];
+                        if (increment) {
+                            newScores.push('waiting');
+                        } else {
+                            if (newScores.length > 1) {
+                                newScores.pop();
+                            } else {
+                                triggerToast("Kuota minimal adalah 1!", "error");
+                                return p;
+                            }
+                        }
+                        const totalScore = newScores.filter(s => s === 'scored').length;
+                        return { ...p, scores: newScores, totalScore };
+                    }
+                    return p;
+                });
+                updateState(updated, null);
+                triggerToast("Kuota tendangan diperbarui!");
+            };
+
+            const handleScoreUpdate = (status) => {
+                const currentShooter = participants.find(p => p.id === settings.currentParticipantId);
+                if (!currentShooter) return;
+
+                const targetRoundIndex = settings.currentRound - 1;
+                
+                if (settings.currentRound > currentShooter.scores.length) {
+                    triggerToast("Ronde aktif melebihi kuota milik peserta ini!", "error");
+                    return;
+                }
+
+                const updatedScores = [...currentShooter.scores];
+                updatedScores[targetRoundIndex] = status;
+                const totalScore = updatedScores.filter(s => s === 'scored').length;
+
+                const updatedParticipants = participants.map(p => {
+                    if (p.id === currentShooter.id) {
+                        return { ...p, scores: updatedScores, totalScore };
+                    }
+                    return p;
+                });
+
+                updateState(updatedParticipants, null);
+
+                if (status === 'scored') {
+                    broadcastChannel.postMessage({ type: 'GOAL_ALERT' });
+                    triggerToast("⚽ GOL! Disiarkan ke TV.");
+                } else {
+                    broadcastChannel.postMessage({ type: 'MISS_ALERT' });
+                    triggerToast("❌ GAGAL! Disiarkan ke TV.");
+                }
+            };
+
+            const handleNextShooter = () => {
+                const pool = (selectedGroupFilter === 'Semua' 
+                    ? participants 
+                    : participants.filter(p => p.group === selectedGroupFilter)).filter(p => p.status === 'aktif');
+
+                if (pool.length === 0) {
+                    triggerToast("Tidak ada peserta aktif di babak ini!", "error");
+                    return;
+                }
+
+                const sorted = [...pool].sort((a, b) => a.order - b.order);
+                const currentIndex = sorted.findIndex(p => p.id === settings.currentParticipantId);
+                
+                let nextIndex = currentIndex + 1;
+                let nextRound = settings.currentRound;
+
+                if (nextIndex >= sorted.length) {
+                    nextIndex = 0;
+                    nextRound = settings.currentRound + 1;
+                    triggerToast("Kembali ke penendang pertama. Putaran baru dimulai!", "info");
+                }
+
+                const nextShooter = sorted[nextIndex];
+                if (nextShooter) {
+                    if (nextRound > nextShooter.scores.length) {
+                        nextRound = 1;
+                    }
+                    updateState(null, {
+                        ...settings,
+                        currentParticipantId: nextShooter.id,
+                        currentRound: nextRound
+                    });
+                    resetToleransiTimer();
+                    triggerToast(`Giliran: ${nextShooter.name} (Putaran ${nextRound})`);
+                }
+            };
+
+            const addParticipant = (e) => {
+                e.preventDefault();
+                if (!newParticipant.name || !newParticipant.team) {
+                    triggerToast("Nama dan Tim wajib diisi!", "error");
+                    return;
+                }
+
+                const placeholderPhotos = [
+                    "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=400&fit=crop&q=80",
+                    "https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=400&fit=crop&q=80"
+                ];
+
+                const finalPhoto = newParticipant.photo.trim() || placeholderPhotos[Math.floor(Math.random() * placeholderPhotos.length)];
+                const maxOrder = participants.length > 0 ? Math.max(...participants.map(p => p.order)) : 0;
+                
+                const parsedQuota = parseInt(newParticipant.defaultQuota, 10);
+                const quota = isNaN(parsedQuota) || parsedQuota < 1 ? 3 : parsedQuota;
+
+                const participantToAdd = {
+                    id: Date.now().toString(),
+                    name: newParticipant.name,
+                    team: newParticipant.team,
+                    group: newParticipant.group,
+                    photo: finalPhoto,
+                    order: maxOrder + 1,
+                    scores: Array(quota).fill('waiting'),
+                    totalScore: 0,
+                    status: 'aktif'
+                };
+
+                updateState([...participants, participantToAdd], null);
+                setNewParticipant(prev => ({ ...prev, name: '', team: '', photo: '' }));
+                triggerToast(`Peserta berhasil didaftarkan di ${newParticipant.group}!`);
+            };
+
+            const changeParticipantGroup = (participantId, targetGroup) => {
+                const updated = participants.map(p => {
+                    if (p.id === participantId) {
+                        return { ...p, group: targetGroup };
+                    }
+                    return p;
+                });
+                updateState(updated, null);
+                triggerToast("Kelompok babak peserta diganti!");
+            };
+
+            const deleteParticipant = (id) => {
+                const updatedParticipants = participants.filter(p => p.id !== id);
+                let nextActiveId = settings.currentParticipantId;
+                if (settings.currentParticipantId === id && updatedParticipants.length > 0) {
+                    nextActiveId = updatedParticipants[0].id;
+                }
+                updateState(updatedParticipants, {
+                    ...settings,
+                    currentParticipantId: nextActiveId
+                });
+                triggerToast("Peserta berhasil dihapus", "info");
+            };
+
+            const moveOrder = (index, direction) => {
+                const list = [...filteredParticipants].sort((a, b) => a.order - b.order);
+                if (direction === 'up' && index === 0) return;
+                if (direction === 'down' && index === list.length - 1) return;
+
+                const targetIndex = direction === 'up' ? index - 1 : index + 1;
+                
+                const currentId = list[index].id;
+                const targetId = list[targetIndex].id;
+
+                const updatedParticipants = participants.map(p => {
+                    if (p.id === currentId) {
+                        return { ...p, order: list[targetIndex].order };
+                    }
+                    if (p.id === targetId) {
+                        return { ...p, order: list[index].order };
+                    }
+                    return p;
+                });
+
+                updateState(updatedParticipants, null);
+            };
+
+            const resetTournament = () => {
+                const updatedParticipants = participants.map(p => ({
+                    ...p,
+                    scores: Array(p.scores.length).fill('waiting'),
+                    totalScore: 0,
+                    status: 'aktif'
+                }));
+                updateState(updatedParticipants, {
+                    ...settings,
+                    currentRound: 1,
+                    currentParticipantId: updatedParticipants[0]?.id || ""
+                });
+                resetToleransiTimer();
+                triggerToast("Turnamen berhasil direset!", "success");
+            };
+
+            const filteredParticipants = participants.filter(p => {
+                const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.team.toLowerCase().includes(searchTerm.toLowerCase());
+                const matchesGroup = selectedGroupFilter === 'Semua' || p.group === selectedGroupFilter;
+                return matchesSearch && matchesGroup;
+            }).sort((a, b) => a.order - b.order);
+
+            const currentShooter = participants.find(p => p.id === settings.currentParticipantId) || participants[0];
+
+            return (
+                <div class="min-h-screen flex flex-col bg-dark-950 text-slate-200">
+                    {/* Header */}
+                    <header class="bg-dark-900 border-b border-slate-800 p-4 sticky top-0 z-50">
+                        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-emerald-500 text-dark-950 font-black px-3 py-1 rounded-lg text-xs font-score">
+                                    ADMIN CONTROL
+                                </div>
+                                <h1 class="font-extrabold text-lg text-white">⚽ SINKRONISASI MONITOR & PUTARAN</h1>
+                            </div>
+                            
+                            <div class="flex items-center gap-2">
+                                <button 
+                                    onClick={() => setShowRulesModal(true)}
+                                    class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-2 rounded-lg flex items-center gap-1.5 transition"
+                                >
+                                    <i class="lucide-scale"></i> Aturan Resmi
+                                </button>
+                                <div class="text-xs text-slate-400 bg-dark-950 px-3 py-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                                    <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                                    Sync Online
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Toast */}
+                    {toast && (
+                        <div class="fixed top-20 right-4 z-50 flex items-center gap-2 bg-slate-900 border border-slate-700 text-slate-100 px-4 py-3 rounded-xl shadow-2xl">
+                            <span class={`w-2.5 h-2.5 rounded-full ${toast.type === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`}></span>
+                            <span class="text-sm font-semibold">{toast.message}</span>
+                        </div>
+                    )}
+
+                    {/* ATURAN MODAL */}
+                    {showRulesModal && (
+                        <div class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div class="bg-dark-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+                                <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                                    <h2 class="text-lg font-bold text-emerald-400 flex items-center gap-2">
+                                        <i class="lucide-scale"></i> ATURAN RESMI PERTANDINGAN PENALTI
+                                    </h2>
+                                    <button onClick={() => setShowRulesModal(false)} class="text-slate-400 hover:text-white">✕</button>
+                                </div>
+                                <div class="text-sm text-slate-300 space-y-3.5 leading-relaxed">
+                                    <div class="flex gap-2"><span class="font-bold text-emerald-400">1.</span> <p>Peserta wajib hadir 15 menit sebelum pertandingan dimulai.</p></div>
+                                    <div class="flex gap-2"><span class="font-bold text-emerald-400">2.</span> <p>Pertandingan dimulai pukul 14.00 WIB hingga selesai.</p></div>
+                                    <div class="flex gap-2"><span class="font-bold text-emerald-400">3.</span> <p>Peserta diberikan toleransi maksimal 1 menit dengan 3 kali panggilan. Apabila tidak hadir, peserta gugur.</p></div>
+                                    <div class="flex gap-2"><span class="font-bold text-emerald-400">4.</span> <p>Setiap peserta mendapatkan kesempatan 3 kali tendangan. Jika seri, wasit melempar koin Rp 1.000.</p></div>
+                                    <div class="flex gap-2"><span class="font-bold text-emerald-400">5.</span> <p>Peserta yang menang berhak melanjutkan ke babak berikutnya.</p></div>
+                                    <div class="flex gap-2"><span class="font-bold text-emerald-400">8.</span> <p>Peserta yang lolos tidak boleh digantikan oleh orang lain.</p></div>
+                                </div>
+                                <div class="flex justify-end pt-2">
+                                    <button onClick={() => setShowRulesModal(false)} class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-xs font-bold">Tutup</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <main class="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        
+                        {/* LEFT COLUMN */}
+                        <section class="lg:col-span-5 space-y-6">
+                            
+                            {/* NEW: MATCH STATUS CONTROLLER */}
+                            <div class="bg-dark-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+                                <h3 class="text-xs font-bold tracking-wider text-slate-400 uppercase flex items-center gap-2">
+                                    <i class="lucide-activity text-emerald-400"></i> KONTROL STATUS LAYAR UTAMA
+                                </h3>
+                                <div class="grid grid-cols-2 gap-2.5">
+                                    <button 
+                                        onClick={() => handleStatusChange('belum_mulai')}
+                                        class={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${settings.matchStatus === 'belum_mulai' ? 'bg-amber-500 text-dark-950 font-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-750'}`}
+                                    >
+                                        <i class="lucide-clock text-xs"></i> Belum Mulai
+                                    </button>
+                                    <button 
+                                        onClick={() => handleStatusChange('live')}
+                                        class={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${settings.matchStatus === 'live' ? 'bg-emerald-500 text-dark-950 font-black animate-pulse' : 'bg-slate-800 text-slate-300 hover:bg-slate-750'}`}
+                                    >
+                                        <i class="lucide-tv text-xs"></i> Live / Tanding
+                                    </button>
+                                    <button 
+                                        onClick={() => handleStatusChange('istirahat')}
+                                        class={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${settings.matchStatus === 'istirahat' ? 'bg-blue-500 text-dark-950 font-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-750'}`}
+                                    >
+                                        <i class="lucide-coffee text-xs"></i> Istirahat
+                                    </button>
+                                    <button 
+                                        onClick={() => handleStatusChange('selesai')}
+                                        class={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${settings.matchStatus === 'selesai' ? 'bg-rose-500 text-white font-black' : 'bg-slate-800 text-slate-300 hover:bg-slate-750'}`}
+                                    >
+                                        <i class="lucide-trophy text-xs"></i> Selesai (Podium)
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* TIMER PANGGILAN */}
+                            {currentShooter && (
+                                <div class="bg-dark-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
+                                    <div class="flex items-center justify-between border-b border-slate-850 pb-2">
+                                        <h3 class="text-xs font-bold tracking-wider text-slate-400 uppercase">⏱️ STOPWATCH PANGGILAN</h3>
+                                        <span class="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 font-bold">{currentShooter.group}</span>
+                                    </div>
+                                    
+                                    <div class="flex items-center justify-between bg-dark-950 p-3 rounded-xl border border-slate-800">
+                                        <div class="space-y-1">
+                                            <p class="text-[10px] text-slate-400 font-medium">Batas Toleransi (Aturan No. 3)</p>
+                                            <div class="flex gap-1">
+                                                {[1, 2, 3].map(call => (
+                                                    <span 
+                                                        key={call} 
+                                                        class={`text-[9px] font-black px-2 py-0.5 rounded ${callCount >= call ? 'bg-amber-500 text-dark-950 font-black' : 'bg-slate-800 text-slate-500'}`}
+                                                    >
+                                                        Call {call}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={incrementCallCount}
+                                            disabled={callCount >= 3}
+                                            class="bg-amber-500 hover:bg-amber-400 text-dark-950 disabled:bg-slate-800 disabled:text-slate-600 font-bold px-3 py-1.5 rounded-lg text-xs transition"
+                                        >
+                                            🔊 Panggil
+                                        </button>
+                                    </div>
+
+                                    <div class="grid grid-cols-3 items-center justify-center gap-3 bg-dark-950 p-3 rounded-xl border border-slate-800">
+                                        <div class="text-center">
+                                            <span class="text-[9px] text-slate-400 uppercase block">Countdown</span>
+                                            <span class="font-score text-2xl font-black text-rose-500">{timerSeconds}s</span>
+                                        </div>
+                                        <div class="col-span-2 flex gap-1 justify-end">
+                                            {isTimerRunning ? (
+                                                <button onClick={stopToleransiTimer} class="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1.5 rounded text-xs font-bold">Pause</button>
+                                            ) : (
+                                                <button onClick={startToleransiTimer} class="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-1.5 rounded text-xs font-bold">Start (1m)</button>
+                                            )}
+                                            <button onClick={resetToleransiTimer} class="bg-slate-800 text-slate-300 px-2.5 py-1.5 rounded text-xs font-bold">Reset</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* PANEL KONTROL PENALTI UTAMA */}
+                            <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-xl relative overflow-hidden">
+                                <h2 class="text-xs font-bold tracking-widest text-emerald-400 uppercase mb-4">🔴 PANEL KONTROL PENALTI</h2>
+
+                                {currentShooter ? (
+                                    <div class="text-center space-y-5">
+                                        <div class="relative w-32 h-32 mx-auto rounded-full overflow-hidden border-4 border-emerald-500 shadow-xl">
+                                            <img src={currentShooter.photo} alt={currentShooter.name} class="w-full h-full object-cover" />
+                                            <div class="absolute bottom-0 inset-x-0 bg-emerald-500 text-dark-950 font-bold text-[10px] py-0.5 uppercase">
+                                                {currentShooter.group}
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <div class="flex items-center justify-center gap-2">
+                                                <h3 class="text-2xl font-black text-white">{currentShooter.name}</h3>
+                                                {currentShooter.status === 'lolos' && <span class="bg-emerald-500 text-dark-950 text-[10px] px-2 py-0.5 rounded font-black uppercase">LOLOS</span>}
+                                                {currentShooter.status === 'gugur' && <span class="bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded font-black uppercase">GUGUR</span>}
+                                            </div>
+                                            <p class="text-xs text-emerald-400 font-bold uppercase tracking-wider">{currentShooter.team}</p>
+                                        </div>
+
+                                        {/* Quick status decider */}
+                                        <div class="bg-dark-950 p-3 rounded-xl border border-slate-800 space-y-2">
+                                            <span class="text-[10px] text-slate-400 font-bold block text-left uppercase">KONTROL STATUS KELULUSAN (ATURAN No. 5)</span>
+                                            <div class="grid grid-cols-3 gap-2">
+                                                <button 
+                                                    onClick={() => handleUpdateStatus(currentShooter.id, 'aktif')}
+                                                    class={`py-1.5 rounded text-xs font-bold transition ${currentShooter.status === 'aktif' ? 'bg-slate-700 text-white' : 'bg-slate-850 text-slate-400 hover:text-white'}`}
+                                                >
+                                                    Aktif
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleUpdateStatus(currentShooter.id, 'lolos')}
+                                                    class={`py-1.5 rounded text-xs font-bold transition ${currentShooter.status === 'lolos' ? 'bg-emerald-500 text-dark-950' : 'bg-slate-850 text-slate-400 hover:text-white'}`}
+                                                >
+                                                    Lolos 🎉
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleUpdateStatus(currentShooter.id, 'gugur')}
+                                                    class={`py-1.5 rounded text-xs font-bold transition ${currentShooter.status === 'gugur' ? 'bg-rose-500 text-white' : 'bg-slate-850 text-slate-400 hover:text-white'}`}
+                                                >
+                                                    Gugur ❌
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Putaran Aktif Selector */}
+                                        <div class="bg-dark-950 rounded-xl p-3 border border-slate-800 flex flex-col gap-2 text-xs">
+                                            <span class="font-bold text-slate-400 self-start">PILIH TENDANGAN KE- :</span>
+                                            <div class="flex flex-wrap items-center gap-1.5 justify-start">
+                                                {currentShooter.scores.map((_, i) => {
+                                                    const rNum = i + 1;
+                                                    return (
+                                                        <button 
+                                                            key={rNum}
+                                                            onClick={() => updateState(null, { ...settings, currentRound: rNum })}
+                                                            class={`w-8 h-8 rounded font-bold transition text-xs ${settings.currentRound === rNum ? 'bg-emerald-500 text-dark-950 font-black shadow' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+                                                        >
+                                                            R{rNum}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        {/* Status Dots */}
+                                        <div class="flex flex-wrap items-center justify-center gap-2 p-2 bg-dark-950 rounded-xl border border-slate-800">
+                                            {currentShooter.scores.map((status, idx) => (
+                                                <div key={idx} class={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${status === 'scored' ? 'bg-emerald-500 text-dark-950 shadow' : status === 'missed' ? 'bg-rose-500 text-white shadow' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
+                                                    {status === 'scored' ? '✓' : status === 'missed' ? '✗' : idx + 1}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        {/* Tombol Score */}
+                                        <div class="grid grid-cols-2 gap-4 pt-2">
+                                            <button 
+                                                onClick={() => handleScoreUpdate('scored')}
+                                                class="bg-emerald-500 hover:bg-emerald-400 text-dark-950 font-extrabold py-3.5 rounded-xl shadow transition active:scale-95 flex flex-col items-center justify-center"
+                                            >
+                                                <span class="text-lg">⚽ GOL!</span>
+                                                <span class="text-[9px] opacity-75">Update TV Display</span>
+                                            </button>
+                                            <button 
+                                                onClick={() => handleScoreUpdate('missed')}
+                                                class="bg-rose-500 hover:bg-rose-400 text-white font-extrabold py-3.5 rounded-xl shadow transition active:scale-95 flex flex-col items-center justify-center"
+                                            >
+                                                <span class="text-lg">❌ GAGAL</span>
+                                                <span class="text-[9px] opacity-75">Update TV Display</span>
+                                            </button>
+                                        </div>
+
+                                        {/* Navigasi Penendang */}
+                                        <div class="flex gap-2">
+                                            <button 
+                                                onClick={handleNextShooter}
+                                                class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 text-sm"
+                                            >
+                                                Next Penendang ({selectedGroupFilter}) <i class="lucide-chevron-right text-xs"></i>
+                                            </button>
+                                            <button 
+                                                onClick={resetTournament}
+                                                class="px-4 bg-slate-800 hover:bg-rose-950/40 hover:text-rose-400 text-slate-400 rounded-xl transition text-xs font-semibold flex items-center justify-center"
+                                                title="Reset Turnamen"
+                                            >
+                                                Reset
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div class="text-center py-8 text-slate-500">Belum ada peserta terdaftar.</div>
+                                )}
+                            </div>
+                        </section>
+
+                        {/* RIGHT COLUMN */}
+                        <section class="lg:col-span-7 space-y-6">
+                            
+                            {/* WIDGET PROMOSI PUTARAN BARU */}
+                            <div class="bg-dark-900 rounded-2xl border-2 border-emerald-500/30 p-5 shadow-xl space-y-4 relative overflow-hidden">
+                                <div class="absolute -top-12 -right-12 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl"></div>
+                                <h3 class="font-bold text-white text-sm flex items-center gap-2">
+                                    🚀 PANEL PROMOSI PUTARAN BARU
+                                </h3>
+                                <p class="text-xs text-slate-400 leading-relaxed">
+                                    Promosikan semua peserta berstatus <span class="text-emerald-400 font-bold">"Lolos"</span> dari babak penyisihan ke babak baru di bawah ini. Skor mereka akan di-reset aman untuk lembaran babak baru tersebut!
+                                </p>
+                                
+                                <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 bg-dark-950 p-3.5 rounded-xl border border-slate-850">
+                                    <div class="flex-1 space-y-1">
+                                        <label class="text-[10px] text-slate-500 font-bold block uppercase">Pilih Babak/Putaran Tujuan</label>
+                                        <select id="promotionTargetSelect" class="w-full bg-dark-900 border border-slate-800 text-xs text-white p-2 rounded-lg">
+                                            {groups.map(g => (
+                                                <option key={g} value={g}>{g}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <button 
+                                        type="button"
+                                        onClick={() => {
+                                            const selVal = document.getElementById("promotionTargetSelect").value;
+                                            handlePromoteToNextRound(selVal);
+                                        }}
+                                        class="bg-emerald-500 hover:bg-emerald-400 text-dark-950 font-black px-4 py-2.5 rounded-xl text-xs transition self-end"
+                                    >
+                                        Promosikan Lolos ➔
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* MANAJEMEN GRUP MANUAL */}
+                            <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-xl space-y-4">
+                                <h3 class="font-bold text-white text-sm flex items-center gap-2">📂 Daftar Putaran/Babak Turnamen</h3>
+                                
+                                <form onSubmit={handleAddGroup} class="flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        placeholder="Nama Putaran Baru (misal: Babak Semifinal)..." 
+                                        value={newGroupName}
+                                        onChange={e => setNewGroupName(e.target.value)}
+                                        class="flex-1 bg-dark-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
+                                    />
+                                    <button type="submit" class="bg-emerald-500 text-dark-950 font-bold px-4 rounded-xl text-xs transition">
+                                        + Tambah Babak
+                                    </button>
+                                </form>
+
+                                <div class="flex flex-wrap gap-2 pt-1">
+                                    {groups.map(g => (
+                                        <div key={g} class="bg-dark-950 border border-slate-800 text-xs px-3 py-1.5 rounded-lg flex items-center gap-2">
+                                            <span class="font-bold text-slate-300">{g}</span>
+                                            <span class="bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded text-[9px]">
+                                                {participants.filter(p => p.group === g).length} Org
+                                            </span>
+                                            <button 
+                                                type="button" 
+                                                onClick={() => handleDeleteGroup(g)}
+                                                class="text-rose-500 hover:text-rose-400 ml-1"
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* REGISTRASI PESERTA BARU */}
+                            <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-xl">
+                                <h3 class="font-bold text-white mb-3 text-sm flex items-center gap-2">👤 Registrasi Peserta</h3>
+                                <form onSubmit={addParticipant} class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                    <input 
+                                        type="text" 
+                                        placeholder="Nama..." 
+                                        value={newParticipant.name}
+                                        onChange={e => setNewParticipant({ ...newParticipant, name: e.target.value })}
+                                        class="w-full bg-dark-950 border border-slate-800 rounded-xl p-3 text-xs text-white"
+                                    />
+                                    <input 
+                                        type="text" 
+                                        placeholder="Tim..." 
+                                        value={newParticipant.team}
+                                        onChange={e => setNewParticipant({ ...newParticipant, team: e.target.value })}
+                                        class="w-full bg-dark-950 border border-slate-800 rounded-xl p-3 text-xs text-white"
+                                    />
+                                    <select 
+                                        value={newParticipant.group}
+                                        onChange={e => setNewParticipant({ ...newParticipant, group: e.target.value })}
+                                        class="w-full bg-dark-950 border border-slate-800 rounded-xl p-3 text-xs text-white"
+                                    >
+                                        {groups.map(g => (
+                                            <option key={g} value={g}>{g}</option>
+                                        ))}
+                                    </select>
+                                    <div class="flex gap-2">
+                                        <input 
+                                            type="text" 
+                                            placeholder="Foto URL..." 
+                                            value={newParticipant.photo}
+                                            onChange={e => setNewParticipant({ ...newParticipant, photo: e.target.value })}
+                                            class="w-full bg-dark-950 border border-slate-800 rounded-xl p-3 text-xs text-white flex-1"
+                                        />
+                                        <button type="submit" class="bg-emerald-500 text-dark-950 font-extrabold px-3 text-xs rounded-xl transition shrink-0">
+                                            Daftar
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+
+                            {/* DAFTAR UTAMA & FILTER GRUP */}
+                            <div class="bg-dark-900 rounded-2xl border border-slate-800 p-5 shadow-xl">
+                                <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4">
+                                    <div class="space-y-1 self-start">
+                                        <h3 class="font-bold text-white text-sm">📋 Urutan Tendangan & Status Babak</h3>
+                                        {/* Filter Grup */}
+                                        <div class="flex flex-wrap gap-1 items-center pt-1">
+                                            <span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Tampilkan:</span>
+                                            <button 
+                                                onClick={() => setSelectedGroupFilter('Semua')}
+                                                class={`text-[10px] px-2.5 py-1 rounded transition ${selectedGroupFilter === 'Semua' ? 'bg-emerald-500 text-dark-950 font-bold' : 'bg-dark-950 text-slate-400 hover:text-white'}`}
+                                            >
+                                                Semua
+                                            </button>
+                                            {groups.map(g => (
+                                                <button 
+                                                    key={g}
+                                                    onClick={() => setSelectedGroupFilter(g)}
+                                                    class={`text-[10px] px-2.5 py-1 rounded transition ${selectedGroupFilter === g ? 'bg-emerald-500 text-dark-950 font-bold' : 'bg-dark-950 text-slate-400 hover:text-white'}`}
+                                                >
+                                                    {g}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <input 
+                                        type="text" 
+                                        placeholder="Cari nama/tim..." 
+                                        value={searchTerm}
+                                        onChange={e => setSearchTerm(e.target.value)}
+                                        class="bg-dark-950 border border-slate-800 rounded-xl py-2 px-3 text-xs text-white w-full sm:w-44"
+                                    />
+                                </div>
+
+                                <div class="overflow-x-auto rounded-xl border border-slate-800">
+                                    <table class="w-full text-left text-xs text-slate-400">
+                                        <thead class="bg-dark-950 text-slate-200 uppercase font-bold border-b border-slate-800">
+                                            <tr>
+                                                <th class="py-3 px-3 text-center">Urutan</th>
+                                                <th class="py-3 px-3">Nama / Klub</th>
+                                                <th class="py-3 px-3">Babak Aktif</th>
+                                                <th class="py-3 px-3 text-center">Status Kelulusan</th>
+                                                <th class="py-3 px-3 text-center">Gol</th>
+                                                <th class="py-3 px-3 text-center">Aksi</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-800/50">
+                                            {filteredParticipants.map((p, index) => {
+                                                const isActive = p.id === settings.currentParticipantId;
+                                                return (
+                                                    <tr key={p.id} class={`transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-200' : 'hover:bg-slate-800/30'}`}>
+                                                        <td class="py-3 px-3">
+                                                            <div class="flex items-center justify-center gap-1">
+                                                                <button onClick={() => moveOrder(index, 'up')} class="text-[10px] p-1 hover:text-white" disabled={index === 0}>▲</button>
+                                                                <span class="font-bold text-white min-w-[15px] text-center">{index + 1}</span>
+                                                                <button onClick={() => moveOrder(index, 'down')} class="text-[10px] p-1 hover:text-white" disabled={index === filteredParticipants.length - 1}>▼</button>
+                                                            </div>
+                                                        </td>
+                                                        <td class="py-3 px-3">
+                                                            <div class="flex items-center gap-2.5">
+                                                                <img src={p.photo} alt={p.name} class="w-8 h-8 rounded-full object-cover shrink-0 aspect-square" />
+                                                                <div>
+                                                                    <h4 class="font-bold text-white flex items-center gap-1.5 text-xs">
+                                                                        {p.name}
+                                                                        {isActive && <span class="bg-emerald-500 text-dark-950 text-[8px] px-1.5 py-0.5 rounded font-black">ACTIVE</span>}
+                                                                    </h4>
+                                                                    <p class="text-[9px] text-slate-500">{p.team}</p>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td class="py-3 px-3">
+                                                            <select 
+                                                                value={p.group} 
+                                                                onChange={e => changeParticipantGroup(p.id, e.target.value)}
+                                                                class="bg-dark-950 text-slate-300 border border-slate-800 rounded p-1 text-[11px]"
+                                                            >
+                                                                {groups.map(g => (
+                                                                    <option key={g} value={g}>{g}</option>
+                                                                ))}
+                                                            </select>
+                                                        </td>
+                                                        <td class="py-3 px-3 text-center">
+                                                            <div class="flex items-center justify-center gap-1.5">
+                                                                <button 
+                                                                    onClick={() => handleUpdateStatus(p.id, 'lolos')}
+                                                                    class={`text-[9px] px-1.5 py-1 rounded font-bold ${p.status === 'lolos' ? 'bg-emerald-500 text-dark-950' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+                                                                >
+                                                                    Lolos
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => handleUpdateStatus(p.id, 'gugur')}
+                                                                    class={`text-[9px] px-1.5 py-1 rounded font-bold ${p.status === 'gugur' ? 'bg-rose-500 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+                                                                >
+                                                                    Gugur
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                        <td class="py-3 px-3 text-center font-bold text-white font-score">
+                                                            {p.totalScore}
+                                                        </td>
+                                                        <td class="py-3 px-3">
+                                                            <div class="flex items-center justify-center gap-2">
+                                                                <button 
+                                                                    onClick={() => {
+                                                                        updateState(null, { ...settings, currentParticipantId: p.id });
+                                                                        resetToleransiTimer();
+                                                                    }} 
+                                                                    class={`px-2 py-1 rounded text-[9px] font-bold transition ${isActive ? 'bg-emerald-500 text-dark-950 font-black' : 'bg-slate-800 text-slate-300 hover:text-white'}`}
+                                                                >
+                                                                    Pilih
+                                                                </button>
+                                                                <button onClick={() => deleteParticipant(p.id)} class="text-rose-500 hover:text-rose-400 text-[10px]">Hapus</button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
